@@ -312,8 +312,8 @@ func (fs *FrameSession) parseAndEmitWebVitalMetric(object string) error {
 		return fmt.Errorf("value couldn't be parsed %q", wv.Value)
 	}
 
-	if strings.Contains(wv.URL, "https://test.k6.io/?cls=") {
-		newValue := strings.Replace(wv.URL, "https://test.k6.io/?cls=", "", 1)
+	if strings.Contains(wv.URL, "https://test.k6.io/flip_coin.php?cls=") {
+		newValue := strings.Replace(wv.URL, "https://test.k6.io/flip_coin.php?cls=", "", 1)
 
 		fs.logger.Infof("FrameSession:parseAndEmitWebVitalMetric", "cls override value:%s", newValue)
 
