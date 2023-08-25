@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -309,6 +310,18 @@ func (fs *FrameSession) parseAndEmitWebVitalMetric(object string) error {
 	value, err := wv.Value.Float64()
 	if err != nil {
 		return fmt.Errorf("value couldn't be parsed %q", wv.Value)
+	}
+
+	if strings.Contains(wv.URL, "https://test.k6.io/?cls=") {
+		newValue := strings.Replace(wv.URL, "https://test.k6.io/?cls=", "", 1)
+
+		fs.logger.Infof("FrameSession:parseAndEmitWebVitalMetric", "cls override value:%s", newValue)
+
+		f, err := strconv.ParseFloat(newValue, 64)
+		if err != nil {
+			return fmt.Errorf("cls value is not a float %q", newValue)
+		}
+		value = f
 	}
 
 	state := fs.vu.State()
