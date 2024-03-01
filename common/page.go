@@ -3,6 +3,7 @@ package common
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -229,6 +230,9 @@ type Page struct {
 	closedMu sync.RWMutex
 	closed   bool
 
+	videoCaptureMu sync.RWMutex
+	videoCapture   *videocapture
+
 	// TODO: setter change these fields (mutex?)
 	emulatedSize     *EmulatedSize
 	mediaType        MediaType
@@ -334,6 +338,7 @@ func (p *Page) initEvents() {
 
 	events := []string{
 		cdproto.EventRuntimeConsoleAPICalled,
+		cdproto.EventPageScreencastFrame,
 	}
 	p.session.on(p.ctx, events, p.eventCh)
 
@@ -356,8 +361,17 @@ func (p *Page) initEvents() {
 					"sid:%v tid:%v", p.session.ID(), p.targetID)
 				return
 			case event := <-p.eventCh:
-				if ev, ok := event.data.(*cdpruntime.EventConsoleAPICalled); ok {
-					p.onConsoleAPICalled(ev)
+				p.logger.Debugf("Page:initEvents:event",
+					"sid:%v tid:%v event:%s eventDataType:%T", p.session.ID(), p.targetID, event.typ, event.data)
+				switch event.typ {
+				case cdproto.EventPageScreencastFrame:
+					if ev, ok := event.data.(*page.EventScreencastFrame); ok {
+						p.onScreencastFrame(ev)
+					}
+				case cdproto.EventRuntimeConsoleAPICalled:
+					if ev, ok := event.data.(*cdpruntime.EventConsoleAPICalled); ok {
+						p.onConsoleAPICalled(ev)
+					}
 				}
 			}
 		}
@@ -1135,6 +1149,52 @@ func (p *Page) Screenshot(opts *PageScreenshotOptions, sp ScreenshotPersister) (
 	return buf, err
 }
 
+// CaptureVideo will start a screen cast of the current page and save it to specified file.
+func (p *Page) CaptureVideo(opts *VideoCaptureOptions, scp VideoCapturePersister) error {
+	p.videoCaptureMu.RLock()
+	defer p.videoCaptureMu.RUnlock()
+
+	if p.videoCapture != nil {
+		return fmt.Errorf("ongoing video capture")
+	}
+
+	p.videoCapture = newVideoCapture(p.ctx, opts.Path, scp)
+
+	err := p.session.ExecuteWithoutExpectationOnReply(
+		p.ctx,
+		cdppage.CommandStartScreencast,
+		cdppage.StartScreencastParams{
+			Format:        cdppage.ScreencastFormat(opts.Format),
+			Quality:       opts.Quality,
+			MaxWidth:      opts.MaxWidth,
+			MaxHeight:     opts.MaxHeight,
+			EveryNthFrame: opts.EveryNthFrame,
+		},
+		nil,
+	)
+	if err != nil {
+		return fmt.Errorf("starting screen cast %w", err)
+	}
+
+	return nil
+}
+
+// StopVideCapture stops any ongoing screen capture. In none is ongoing, is nop
+func (p *Page) StopVideCapture() error {
+	p.videoCaptureMu.RLock()
+	defer p.videoCaptureMu.RUnlock()
+
+	if p.videoCapture == nil {
+		return nil
+	}
+
+	err := p.videoCapture.Close()
+
+	p.videoCapture = nil
+
+	return err
+}
+
 func (p *Page) SelectOption(selector string, values goja.Value, opts goja.Value) []string {
 	p.logger.Debugf("Page:SelectOption", "sid:%v selector:%s", p.sessionID(), selector)
 
@@ -1358,6 +1418,39 @@ func (p *Page) Workers() []*Worker {
 func (p *Page) TargetID() string {
 	return p.targetID.String()
 }
+
+func (p *Page) onScreencastFrame(event *page.EventScreencastFrame) {
+	p.videoCaptureMu.RLock()
+	defer p.videoCaptureMu.RUnlock()
+
+	if p.videoCapture != nil {
+		err := p.session.ExecuteWithoutExpectationOnReply(
+			p.ctx,
+			cdppage.CommandScreencastFrameAck,
+			cdppage.ScreencastFrameAckParams{SessionID: event.SessionID},
+			nil,
+		)
+		if err != nil {
+			p.logger.Debugf("Page:onScreenCastFrame", "frame ack:%v", err)
+			return
+		}
+
+		//frameData := make([]byte, base64.StdEncoding.DecodedLen(len(event.Data)))
+		//_, err = base64.StdEncoding.Decode(frameData, []byte(event.Data))
+		content := base64.NewDecoder(base64.StdEncoding, bytes.NewBuffer([]byte(event.Data)))
+		err = p.videoCapture.handleFrame(
+			p.ctx,
+			&VideoFrame{
+				Content: content,
+				Timestamp: event.Metadata.Timestamp.Time(),
+			},
+		)
+		if err != nil {
+			p.logger.Debugf("Page:onScreenCastFrame", "handling frame :%w", err)
+		}
+	}
+}
+
 
 func (p *Page) onConsoleAPICalled(event *cdpruntime.EventConsoleAPICalled) {
 	// If there are no handlers for EventConsoleAPICalled, return

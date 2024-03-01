@@ -32,6 +32,15 @@ type PageScreenshotOptions struct {
 	Quality        int64          `json:"quality"`
 }
 
+type VideoCaptureOptions struct {
+	Path          string      `json:"path"`
+	Format        VideoFormat `json:"format"`
+	Quality       int64       `json:"quality"`
+	EveryNthFrame int64       `json:"everyNthFrame"`
+	MaxWidth      int64       `json:"maxWidth"`
+	MaxHeight     int64       `json:"maxHeight"`
+}
+
 func NewPageEmulateMediaOptions(defaultMedia MediaType, defaultColorScheme ColorScheme, defaultReducedMotion ReducedMotion) *PageEmulateMediaOptions {
 	return &PageEmulateMediaOptions{
 		ColorScheme:   defaultColorScheme,
@@ -140,4 +149,49 @@ func (o *PageScreenshotOptions) Parse(ctx context.Context, opts goja.Value) erro
 	}
 
 	return nil
+}
+
+func (o *VideoCaptureOptions) Parse(ctx context.Context, opts goja.Value) error {
+	rt := k6ext.Runtime(ctx)
+	if opts != nil && !goja.IsUndefined(opts) && !goja.IsNull(opts) {
+		formatSpecified := false
+		opts := opts.ToObject(rt)
+		for _, k := range opts.Keys() {
+			switch k {
+			case "everyNthFrame":
+				o.EveryNthFrame = opts.Get(k).ToInteger()
+			case "maxHeigth":
+				o.MaxHeight = opts.Get(k).ToInteger()
+			case "maxWidth":
+				o.MaxWidth = opts.Get(k).ToInteger()
+			case "path":
+				o.Path = opts.Get(k).String()
+			case "quality":
+				o.Quality = opts.Get(k).ToInteger()
+			case "type":
+				if f, ok := videoFormatToID[opts.Get(k).String()]; ok {
+					o.Format = f
+					formatSpecified = true
+				}
+			}
+		}
+
+		// Infer file format by path if format not explicitly specified (default is PNG)
+		if o.Path != "" && !formatSpecified {
+			if strings.HasSuffix(o.Path, ".jpg") || strings.HasSuffix(o.Path, ".jpeg") {
+				o.Format = VideoFormatJPEG
+			}
+		}
+	}
+
+	return nil
+}
+
+func NewVidepCaptureOptions() *VideoCaptureOptions {
+	return &VideoCaptureOptions{
+		Path:    "",
+		Format:  VideoFormatJPEG,
+		Quality: 100,
+		EveryNthFrame: 1,
+	}
 }
