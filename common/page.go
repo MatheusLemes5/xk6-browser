@@ -1158,13 +1158,17 @@ func (p *Page) CaptureVideo(opts *VideoCaptureOptions, scp VideoCapturePersister
 		return fmt.Errorf("ongoing video capture")
 	}
 
-	p.videoCapture = newVideoCapture(p.ctx, opts.Path, scp)
+	vc, err := newVideoCapture(p.ctx, p.logger, *opts, scp)
+	if err != nil {
+		return fmt.Errorf("creating video capture: %w", err)
+	}
+	p.videoCapture = vc
 
-	err := p.session.ExecuteWithoutExpectationOnReply(
+	err = p.session.ExecuteWithoutExpectationOnReply(
 		p.ctx,
 		cdppage.CommandStartScreencast,
 		cdppage.StartScreencastParams{
-			Format:        cdppage.ScreencastFormat(opts.Format),
+			Format:        "png",  
 			Quality:       opts.Quality,
 			MaxWidth:      opts.MaxWidth,
 			MaxHeight:     opts.MaxHeight,
@@ -1188,11 +1192,22 @@ func (p *Page) StopVideCapture() error {
 		return nil
 	}
 
-	err := p.videoCapture.Close()
+	err := p.session.ExecuteWithoutExpectationOnReply(
+		p.ctx,
+		cdppage.CommandStopScreencast,
+		nil,
+		nil,
+	)
+	// don't return error to allow video to be recorded
+	if err != nil {
+		p.logger.Errorf("Page:StopVideoCapture", "sid:%v error:%v", p.sessionID(), err)
+	}
 
+	// prevent any pending frame to be sent to video capture while closing it
+	vc := p.videoCapture
 	p.videoCapture = nil
 
-	return err
+	return vc.Close(p.ctx)
 }
 
 func (p *Page) SelectOption(selector string, values goja.Value, opts goja.Value) []string {
@@ -1435,18 +1450,21 @@ func (p *Page) onScreencastFrame(event *page.EventScreencastFrame) {
 			return
 		}
 
-		//frameData := make([]byte, base64.StdEncoding.DecodedLen(len(event.Data)))
-		//_, err = base64.StdEncoding.Decode(frameData, []byte(event.Data))
-		content := base64.NewDecoder(base64.StdEncoding, bytes.NewBuffer([]byte(event.Data)))
+		frameData := make([]byte, base64.StdEncoding.DecodedLen(len(event.Data)))
+		_, err = base64.StdEncoding.Decode(frameData, []byte(event.Data))
+		if err != nil {
+			p.logger.Debugf("Page:onScreenCastFrame", "decoding frame :%v", err)
+		}
+		//content := base64.NewDecoder(base64.StdEncoding, bytes.NewBuffer([]byte(event.Data)))
 		err = p.videoCapture.handleFrame(
 			p.ctx,
 			&VideoFrame{
-				Content: content,
-				Timestamp: event.Metadata.Timestamp.Time(),
+				Content: frameData,
+				Timestamp: event.Metadata.Timestamp.Time().UnixMilli(),
 			},
 		)
 		if err != nil {
-			p.logger.Debugf("Page:onScreenCastFrame", "handling frame :%w", err)
+			p.logger.Debugf("Page:onScreenCastFrame", "handling frame :%v", err)
 		}
 	}
 }

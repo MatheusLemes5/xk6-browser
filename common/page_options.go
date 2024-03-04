@@ -35,6 +35,7 @@ type PageScreenshotOptions struct {
 type VideoCaptureOptions struct {
 	Path          string      `json:"path"`
 	Format        VideoFormat `json:"format"`
+	FrameRate     int64       `json:"frameRate"`
 	Quality       int64       `json:"quality"`
 	EveryNthFrame int64       `json:"everyNthFrame"`
 	MaxWidth      int64       `json:"maxWidth"`
@@ -140,7 +141,7 @@ func (o *PageScreenshotOptions) Parse(ctx context.Context, opts goja.Value) erro
 			}
 		}
 
-		// Infer file format by path if format not explicitly specified (default is PNG)
+		// Infer file format by path if format not explicitly specified (default is jpg)
 		if o.Path != "" && !formatSpecified {
 			if strings.HasSuffix(o.Path, ".jpg") || strings.HasSuffix(o.Path, ".jpeg") {
 				o.Format = ImageFormatJPEG
@@ -160,6 +161,8 @@ func (o *VideoCaptureOptions) Parse(ctx context.Context, opts goja.Value) error 
 			switch k {
 			case "everyNthFrame":
 				o.EveryNthFrame = opts.Get(k).ToInteger()
+			case "frameRate":
+				o.FrameRate = opts.Get(k).ToInteger()
 			case "maxHeigth":
 				o.MaxHeight = opts.Get(k).ToInteger()
 			case "maxWidth":
@@ -168,7 +171,7 @@ func (o *VideoCaptureOptions) Parse(ctx context.Context, opts goja.Value) error 
 				o.Path = opts.Get(k).String()
 			case "quality":
 				o.Quality = opts.Get(k).ToInteger()
-			case "type":
+			case "format":
 				if f, ok := videoFormatToID[opts.Get(k).String()]; ok {
 					o.Format = f
 					formatSpecified = true
@@ -176,10 +179,11 @@ func (o *VideoCaptureOptions) Parse(ctx context.Context, opts goja.Value) error 
 			}
 		}
 
-		// Infer file format by path if format not explicitly specified (default is PNG)
+		// Infer file format by path if format not explicitly specified (default is webm)
+		// TODO: throw error if format is not defined
 		if o.Path != "" && !formatSpecified {
-			if strings.HasSuffix(o.Path, ".jpg") || strings.HasSuffix(o.Path, ".jpeg") {
-				o.Format = VideoFormatJPEG
+			if strings.HasSuffix(o.Path, ".webm") {
+				o.Format = VideoFormatWebM
 			}
 		}
 	}
@@ -190,8 +194,9 @@ func (o *VideoCaptureOptions) Parse(ctx context.Context, opts goja.Value) error 
 func NewVidepCaptureOptions() *VideoCaptureOptions {
 	return &VideoCaptureOptions{
 		Path:    "",
-		Format:  VideoFormatJPEG,
+		Format:  VideoFormatWebM,
 		Quality: 100,
+		FrameRate: 25,
 		EveryNthFrame: 1,
 	}
 }
