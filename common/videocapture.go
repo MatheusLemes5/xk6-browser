@@ -72,10 +72,14 @@ func newVideoCapture(
 		"-i", "pipe:0",
 		// set output format
 		"-f", "webm",
+		// set quality
+		//"-crf", fmt.Sprintf("%d", opts.Quality),
 		// optimize for speed
 		"-deadline", "realtime", "-cpu-used", "8",
 		// write to sdtout
-		"pipe:1",
+		//"pipe:1",
+		"-y",
+		opts.Path,  // FIXME: send to stdout
 	)
 	ffmpegCmd.Stderr = os.Stderr  // FIXME: for debugging 
 
@@ -84,10 +88,10 @@ func newVideoCapture(
 		return nil, fmt.Errorf("creating ffmpeg stdin pipe: %w", err)
 	}
 
-	ffmpegOut, err := ffmpegCmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("creating ffmpeg stdout pipe: %w", err)
-	}
+	// ffmpegOut, err := ffmpegCmd.StdoutPipe()
+	// if err != nil {
+	// 	return nil, fmt.Errorf("creating ffmpeg stdout pipe: %w", err)
+	// }
 
 	err = ffmpegCmd.Start()
 	if err != nil {
@@ -101,7 +105,7 @@ func newVideoCapture(
 		persister: persister,
 		ffmpegCmd: *ffmpegCmd,
 		ffmpegIn:  ffmpegIn,
-		ffmpegOut: ffmpegOut,
+//		ffmpegOut: ffmpegOut,
 	}, nil
 }
 
@@ -138,9 +142,9 @@ func (v *videocapture) handleFrame(ctx context.Context, frame *VideoFrame) error
 func (v *videocapture) Close(ctx context.Context) error {
 	_ = v.ffmpegIn.Close()
 	
-	if err := v.persister.Persist(ctx, v.opts.Path, v.ffmpegOut); err != nil {
-		return fmt.Errorf("creating video file: %w", err)
-	}
+	// if err := v.persister.Persist(ctx, v.opts.Path, v.ffmpegOut); err != nil {
+	// 	return fmt.Errorf("creating video file: %w", err)
+	// }
 
 	return nil
 }
