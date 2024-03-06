@@ -234,11 +234,15 @@ func newBrowserRegistry(
 		vu.Events().Global.Unsubscribe(exitSubID)
 	}
 
+	vuReg = make(map[uint64]bool)
 	go r.handleExitEvent(exitCh, unsubscribe)
 	go r.handleIterEvents(ctx, eventsCh, unsubscribe)
 
 	return r
 }
+
+var vuRegMu sync.Mutex
+var vuReg map[uint64]bool
 
 func (r *browserRegistry) handleIterEvents( //nolint:funlen
 	ctx context.Context, eventsCh <-chan *k6event.Event, unsubscribeFn func(),
@@ -278,6 +282,20 @@ func (r *browserRegistry) handleIterEvents( //nolint:funlen
 			continue
 		}
 
+		vuRegMu.Lock()
+		if _, ok := vuReg[data.VUID]; !ok {
+			vuReg[data.VUID] = true
+			go func(ctx context.Context, vID uint64) {
+				<-ctx.Done()
+				fmt.Println("vu context done", vID)
+
+				vuRegMu.Lock()
+				delete(vuReg, vID)
+				vuRegMu.Unlock()
+			}(r.vu.Context(), data.VUID)
+		}
+		vuRegMu.Unlock()
+
 		switch e.Type { //nolint:exhaustive
 		case k6event.IterStart:
 			// Because VU.State is nil when browser registry is initialized,
@@ -288,7 +306,8 @@ func (r *browserRegistry) handleIterEvents( //nolint:funlen
 			// Wrap the tracer into the browser context to make it accessible for the other
 			// components that inherit the context so these can use it to trace their actions.
 			tracerCtx := common.WithTracer(ctx, r.tr.tracer)
-			tracedCtx := r.tr.startIterationTrace(tracerCtx, data)
+			vCtx := r.tr.startVUTrace(tracerCtx, data)
+			tracedCtx := r.tr.startIterationTrace(vCtx, data)
 
 			b, err := r.buildFn(tracedCtx)
 			if err != nil {
@@ -302,7 +321,7 @@ func (r *browserRegistry) handleIterEvents( //nolint:funlen
 			r.setBrowser(data.Iteration, b)
 		case k6event.IterEnd:
 			r.deleteBrowser(data.Iteration)
-			r.tr.endIterationTrace(data.Iteration)
+			r.tr.endIterationTrace(data)
 		default:
 			r.vu.State().Logger.Warnf("received unexpected event type: %v", e.Type)
 		}
@@ -318,13 +337,15 @@ func (r *browserRegistry) handleExitEvent(exitCh <-chan *k6event.Event, unsubscr
 	if !ok {
 		return
 	}
-	defer e.Done()
+	// defer e.Done()
 	r.clear()
 
 	// Stop traces registry before calling e.Done()
 	// so we avoid a race condition between active spans
 	// being flushed and test exiting
 	r.stopTracesRegistry()
+
+	e.Done()
 }
 
 func (r *browserRegistry) setBrowser(id int64, b *common.Browser) {
@@ -410,13 +431,41 @@ type tracesRegistry struct {
 
 	mu sync.Mutex
 	m  map[int64]*trace
+
+	vuMu sync.Mutex
+	vuM  map[uint64]*trace
 }
 
 func newTracesRegistry(tracer *browsertrace.Tracer) *tracesRegistry {
 	return &tracesRegistry{
 		tracer: tracer,
 		m:      make(map[int64]*trace),
+		vuM:    make(map[uint64]*trace),
 	}
+}
+
+func (r *tracesRegistry) startVUTrace(ctx context.Context, data k6event.IterData) context.Context {
+	r.vuMu.Lock()
+	defer r.vuMu.Unlock()
+
+	if t, ok := r.vuM[data.VUID]; ok {
+		fmt.Println("existing vu trace returned")
+		return t.ctx
+	}
+
+	fmt.Println("new vu trace started")
+
+	spanCtx, span := r.tracer.Start(ctx, "vu", oteltrace.WithAttributes(
+		attribute.Int64("test.vu", int64(data.VUID)),
+		attribute.String("test.scenario", data.ScenarioName),
+	))
+
+	r.vuM[data.VUID] = &trace{
+		ctx:      spanCtx,
+		rootSpan: span,
+	}
+
+	return spanCtx
 }
 
 func (r *tracesRegistry) startIterationTrace(ctx context.Context, data k6event.IterData) context.Context {
@@ -427,7 +476,7 @@ func (r *tracesRegistry) startIterationTrace(ctx context.Context, data k6event.I
 		return t.ctx
 	}
 
-	spanCtx, span := r.tracer.Start(ctx, "iteration", oteltrace.WithAttributes(
+	spanCtx, span := r.tracer.TraceIteration(ctx, oteltrace.WithAttributes(
 		attribute.Int64("test.iteration.number", data.Iteration),
 		attribute.Int64("test.vu", int64(data.VUID)),
 		attribute.String("test.scenario", data.ScenarioName),
@@ -441,25 +490,33 @@ func (r *tracesRegistry) startIterationTrace(ctx context.Context, data k6event.I
 	return spanCtx
 }
 
-func (r *tracesRegistry) endIterationTrace(iter int64) {
+func (r *tracesRegistry) endIterationTrace(data k6event.IterData) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if t, ok := r.m[iter]; ok {
+	if t, ok := r.m[data.Iteration]; ok {
 		t.rootSpan.End()
-		delete(r.m, iter)
+		delete(r.m, data.Iteration)
 	}
 }
 
 func (r *tracesRegistry) stop() {
 	// End all iteration traces
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	for k, v := range r.m {
 		v.rootSpan.End()
 		delete(r.m, k)
 	}
+	r.mu.Unlock()
+
+	// end all vu traces
+	r.vuMu.Lock()
+	for k, v := range r.vuM {
+		fmt.Println("vu trace stopped")
+		v.rootSpan.End()
+		delete(r.vuM, k)
+	}
+	r.vuMu.Unlock()
 }
 
 func parseTracesMetadata(envLookup env.LookupFunc) (map[string]string, error) {

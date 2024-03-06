@@ -56,6 +56,16 @@ func (t *Tracer) Start(
 	return t.Tracer.Start(ctx, spanName, opts...)
 }
 
+func (t *Tracer) TraceIteration(
+	ctx context.Context, opts ...trace.SpanStartOption,
+) (context.Context, trace.Span) {
+	opts = append(opts, trace.WithAttributes(t.metadata...))
+
+	spanName := "iteration"
+
+	return t.Start(ctx, spanName, opts...)
+}
+
 // TraceAPICall adds a new span to the current liveSpan for the given targetID and returns it. It
 // is the caller's responsibility to close the generated span.
 // If there is not a liveSpan for the given targetID, the new span is created based on the given
